@@ -21,3 +21,6 @@ requests>=2.32
 
 # CORS for API
 flask-cors>=4.0
+
+# Production WSGI server
+gunicorn>=21.2
