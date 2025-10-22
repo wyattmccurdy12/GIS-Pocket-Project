@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 import sqlite3
 from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
 
 from .db import DB_PATH, init_db, ingest_nyc_crashes, clear_nyc_cache
 from .nyc import fetch_nyc_crashes_one_month, to_geodataframe, kmeans_hotspots
 
 app = Flask(__name__)
+CORS(app, resources={r"/nyc/*": {"origins": "*"}})
 
 # NYC bbox in EPSG:3857 (approx): x[-8270000,-8205000], y[4960000,5030000]
 NYC_BBOX_3857 = (-8270000.0, -8205000.0, 4960000.0, 5030000.0)
