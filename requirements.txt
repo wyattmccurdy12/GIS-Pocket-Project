@@ -1,0 +1,20 @@
+# Core scientific
+numpy>=1.26
+pandas>=2.2
+
+# Geospatial stack (no heavy GDAL)
+shapely>=2.0
+geopandas>=0.14
+pyogrio>=0.7
+
+# API
+Flask>=3.0
+
+# SQLite helpers
+sqlite-utils>=3.36
+
+# Testing
+pytest>=8.0
+
+# Data ingestion
+requests>=2.32
