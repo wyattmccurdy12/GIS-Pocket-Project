@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pocket GIS Viewer (Static)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <link rel="stylesheet" href="./static/styles.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    // Set your deployed API base URL here (no trailing slash)
+    // Example: 'https://your-app.onrender.com'
+    window.API_BASE = window.API_BASE || 'https://YOUR-API-BASE';
+  </script>
+</head>
+<body>
+  <div id="header">
+    <h1>Pocket GIS: NYC Crash Hotspots</h1>
+    <div class="controls">
+      <label>Hotspots k <input id="nyc-k" type="number" value="20" min="5" step="5"></label>
+      <label>Hour <input id="nyc-hour" type="number" min="0" max="23" placeholder="all" style="width:64px"></label>
+      <button id="nyc-refresh">Refresh NYC</button>
+      <button id="info-btn" title="About this app">Info</button>
+    </div>
+  </div>
+  <div id="map" style="position:absolute; left:0; top:56px; bottom:32px; right:360px;"></div>
+  <div id="stats"></div>
+  <!-- Intro Modal -->
+  <div id="intro-overlay" style="position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; z-index:2000;"></div>
+  <div id="intro-modal" style="position:fixed; left:50%; top:20%; transform:translateX(-50%); width:560px; max-width:92vw; background:#fff; border:1px solid #e2e8f0; border-radius:8px; box-shadow:0 10px 30px rgba(0,0,0,0.25); padding:14px 16px; display:none; z-index:2001;">
+    <div style="display:flex; align-items:center; justify-content:space-between;">
+      <div style="font-weight:700; font-size:16px; color:#0f172a;">Welcome to NYC Crash Hotspots</div>
+      <button id="intro-close" style="font-size:12px; padding:4px 8px;">Close</button>
+    </div>
+    <div style="font-size:13px; color:#0f172a; margin-top:8px; line-height:1.5;">
+      <ul style="margin:8px 0 0 16px; padding:0;">
+        <li>Map shows last 30 days of NYC crashes and hotspot clusters.</li>
+        <li>Use the draw tools to select an area (rectangle) or a point to analyze.</li>
+        <li>Right panel shows: daily crash timeseries, crashes by severity, and summary stats.</li>
+        <li>Filter by hour, change number of hotspots, or refresh data from NYC Open Data.</li>
+      </ul>
+      <hr style="margin:10px 0; border:none; border-top:1px solid #e2e8f0;" />
+      <div style="font-weight:600; margin-bottom:6px;">Specifications</div>
+      <ul style="margin:6px 0 0 16px; padding:0;">
+        <li>Data source: NYC Open Data (Socrata h9gi-nx95), refreshed on demand (last 30 days).</li>
+        <li>Geodatabase: SQLite with WKT geometry column and RTREE spatial index.</li>
+        <li>CRS: Stored in EPSG:3857; served to the map in EPSG:4326.</li>
+        <li>Hotspots: K-means clustering over planar coordinates.</li>
+        <li>APIs: /nyc/crashes, /nyc/hotspots, /nyc/timeseries, /nyc/summary.</li>
+      </ul>
+    </div>
+  </div>
+  <aside id="sidebar" style="position:absolute; top:56px; right:0; bottom:0; width:360px; border-left:1px solid #e2e8f0; background:#ffffff; overflow:auto;">
+    <div class="panel" style="padding:10px; border-bottom:1px solid #e2e8f0;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <div style="font-weight:600; font-size:12px;">Timeseries (last 30 days)</div>
+        <button id="ts-clear" style="font-size:11px; padding:2px 6px;">Clear</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; margin:6px 0 2px; font-size:12px;">
+        <span>Radius</span>
+        <input id="ts-radius" type="range" min="100" max="1000" step="50" value="250" />
+        <span id="ts-radius-val">250 m</span>
+      </div>
+      <canvas id="ts-canvas" width="340" height="140"></canvas>
+    </div>
+    <div class="panel" style="padding:10px; border-bottom:1px solid #e2e8f0;">
+      <div style="font-weight:600; font-size:12px; margin-bottom:6px;">Crashes by Severity</div>
+      <canvas id="sev-canvas" width="340" height="160"></canvas>
+    </div>
+    <div class="panel" style="padding:10px;">
+      <div style="font-weight:600; font-size:12px; margin-bottom:6px;">Summary</div>
+      <div id="summary-content" style="font-size:12px; color:#0f172a; line-height:1.6;"></div>
+    </div>
+  </aside>
+  <div id="legend" class="legend"></div>
+  <script>
+  const API_BASE = (window.API_BASE || '').replace(/\/$/, '');
+  const map = L.map('map').setView([40.73, -73.93], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Helpers
+    function quantiles(values, q=[0,0.2,0.4,0.6,0.8,1]){
+      const s = [...values].filter(v=>isFinite(v)).sort((a,b)=>a-b);
+      if (s.length===0) return q.map(()=>0);
+      return q.map(p=> s[Math.min(s.length-1, Math.max(0, Math.floor(p*(s.length-1))))]);
+    }
+    const ramp = ['#edf8e9','#bae4b3','#74c476','#31a354','#006d2c'];
+    function colorByBins(v, bins){
+      if (!isFinite(v)) return '#ccc';
+      for (let i=0;i<bins.length-1;i++){
+        if (v>=bins[i] && v<=bins[i+1]) return ramp[i];
+      }
+      return ramp[ramp.length-1];
+    }
+    function renderLegend(title, bins){
+      const el = document.getElementById('legend');
+      if (!bins || bins.length<2){ el.innerHTML=''; return; }
+      let html = `<div class="legend-box"><div class="legend-title">${title}</div>`;
+      for (let i=0;i<bins.length-1;i++){
+        html += `<div class="legend-item"><span class="swatch" style="background:${ramp[i]}"></span>${bins[i].toFixed(2)} – ${bins[i+1].toFixed(2)}</div>`;
+      }
+      html += `<div class="legend-sub">Hotspot size ~ crash count</div></div>`;
+      el.innerHTML = html;
+    }
+
+    let crashesLayer = null;
+    let hotspotLayer = null;
+    let drawLayer = new L.FeatureGroup();
+    map.addLayer(drawLayer);
+    const drawControl = new L.Control.Draw({
+      draw: {
+        polygon: false,
+        polyline: false,
+        circle: false,
+        circlemarker: false,
+        marker: { repeatMode: false },
+        rectangle: { shapeOptions: { color: '#2563eb' } }
+      },
+      edit: { featureGroup: drawLayer, edit: false, remove: true }
+    });
+    map.addControl(drawControl);
+
+    function renderLegendHotspots(){
+      const el = document.getElementById('legend');
+      el.innerHTML = `<div class="legend-box"><div class="legend-title">Hotspots</div>
+        <div class="legend-item"><span class="swatch" style="background:#ef3b2c;width:10px;height:10px;border-radius:50%"></span> size ∝ crash count</div>
+      </div>`;
+    }
+    async function loadNYC(opts={refresh:false}){
+      const k = document.getElementById('nyc-k').value;
+      const hourVal = document.getElementById('nyc-hour').value;
+      const hourParam = hourVal === '' ? '' : `&hour=${hourVal}`;
+      const refreshParam = opts.refresh ? '&refresh=1' : '';
+      const [cr, hs] = await Promise.all([
+        fetch(`${API_BASE}/nyc/crashes?limit=5000${hourParam}${refreshParam}`).then(r=>r.json()),
+        fetch(`${API_BASE}/nyc/hotspots?k=${k}${hourParam}${refreshParam}`).then(r=>r.json())
+      ]);
+      if (crashesLayer) { map.removeLayer(crashesLayer); crashesLayer=null; }
+      if (hotspotLayer) { map.removeLayer(hotspotLayer); hotspotLayer=null; }
+      crashesLayer = L.geoJSON(cr, {
+        pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+          radius: 3,
+          color: '#111', fillColor: '#3182bd', fillOpacity: 0.8
+        }),
+        onEachFeature: (f, layer) => layer.bindPopup(`NYC Crash ${f.properties.crash_id}<br>`+
+          `Date: ${f.properties.crash_date || 'unknown'}<br>`+
+          `Severity: ${f.properties.severity}<br>`+
+          `Hour: ${f.properties.hour}`)
+      }).addTo(map);
+      hotspotLayer = L.geoJSON(hs, {
+        pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+          radius: Math.max(4, Math.min(16, f.properties.n/8)),
+          color: '#b30000', fillColor: '#ef3b2c', fillOpacity: 0.85, weight: 1
+        }),
+        onEachFeature: (f, layer) => layer.bindPopup(`Hotspot ${f.properties.cluster}<br>`+
+          `Crashes: ${f.properties.n}<br>`+`Avg severity: ${f.properties.severity_mean.toFixed(2)}`)
+      }).addTo(map);
+      try { map.fitBounds(hotspotLayer.getBounds(), { padding:[20,20] }); } catch (e) {}
+      document.getElementById('stats').innerText = `NYC last 30 days: crashes=${cr.features.length}, hotspots=${hs.features.length}`;
+    }
+
+    // Timeseries chart
+    const ctx = document.getElementById('ts-canvas').getContext('2d');
+    let chart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'Crashes', data: [], borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,0.2)', tension:0.25, fill:true, pointRadius:0 }] },
+      options: { responsive: false, scales: { x: { ticks: { maxTicksLimit: 6 } }, y: { beginAtZero:true, precision:0 } }, plugins:{ legend:{display:false} } }
+    });
+
+    function updateChart(series){
+      const labels = series.map(d=>d.date.slice(5));
+      const data = series.map(d=>d.count);
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = data;
+      chart.update();
+    }
+
+    async function fetchTimeseriesForGeom(geom){
+      const params = new URLSearchParams();
+      params.set('mode', geom.mode);
+      if (geom.mode==='bbox'){
+        params.set('bbox', geom.bbox.join(','));
+      } else {
+        params.set('lon', geom.lon);
+        params.set('lat', geom.lat);
+        params.set('radius_m', geom.radius_m||Number(document.getElementById('ts-radius').value)||250);
+      }
+      const res = await fetch(`${API_BASE}/nyc/timeseries?${params.toString()}`);
+      const js = await res.json();
+      updateChart(js.series||[]);
+    }
+
+    // Severity histogram
+    const sevCtx = document.getElementById('sev-canvas').getContext('2d');
+    let sevChart = new Chart(sevCtx, {
+      type: 'bar',
+      data: { labels: ['1','2','3','4','5'], datasets: [{ label: 'Count', data: [0,0,0,0,0], backgroundColor:'#f59e0b' }] },
+      options: { responsive:false, scales:{ x:{ title:{display:true, text:'Severity'}}, y:{ beginAtZero:true, precision:0 } }, plugins:{ legend:{display:false} } }
+    });
+
+    function updateSeverity(hist){
+      const arr = ['1','2','3','4','5'].map(k => (hist && hist[k]) || 0);
+      sevChart.data.datasets[0].data = arr;
+      sevChart.update();
+    }
+
+    async function fetchSummaryForGeom(geom){
+      const params = new URLSearchParams();
+      params.set('mode', geom.mode);
+      if (geom.mode==='bbox') params.set('bbox', geom.bbox.join(','));
+      else { params.set('lon', geom.lon); params.set('lat', geom.lat); params.set('radius_m', geom.radius_m||Number(document.getElementById('ts-radius').value)||250); }
+      const res = await fetch(`${API_BASE}/nyc/summary?${params.toString()}`);
+      const js = await res.json();
+      updateSeverity(js.severity_hist||{});
+      const el = document.getElementById('summary-content');
+      el.innerHTML = `Total crashes: <b>${js.total||0}</b><br>`+
+        `Avg severity: <b>${js.avg_severity?.toFixed ? js.avg_severity.toFixed(2) : js.avg_severity}</b><br>`+
+        `Date range: <b>${js.min_date||'-'}</b> to <b>${js.max_date||'-'}</b>`;
+    }
+
+    function lngLatBoundsToArray(b){
+      const sw = b.getSouthWest(); const ne = b.getNorthEast();
+      return [sw.lng, sw.lat, ne.lng, ne.lat];
+    }
+
+    let lastSelection = null; // remember last point for live radius updates
+    map.on(L.Draw.Event.CREATED, async (e) => {
+      drawLayer.clearLayers();
+      drawLayer.addLayer(e.layer);
+      if (e.layerType === 'rectangle'){
+        const bbox = lngLatBoundsToArray(e.layer.getBounds());
+        lastSelection = {mode:'bbox', bbox};
+        await Promise.all([
+          fetchTimeseriesForGeom(lastSelection),
+          fetchSummaryForGeom(lastSelection)
+        ]);
+      } else if (e.layerType === 'marker'){
+        const ll = e.layer.getLatLng();
+        lastSelection = {mode:'point', lon: ll.lng, lat: ll.lat};
+        await Promise.all([
+          fetchTimeseriesForGeom(lastSelection),
+          fetchSummaryForGeom(lastSelection)
+        ]);
+      }
+    });
+
+    document.getElementById('ts-clear').addEventListener('click', ()=>{
+      drawLayer.clearLayers();
+      updateChart([]);
+      updateSeverity({});
+      document.getElementById('summary-content').innerHTML = '';
+      lastSelection = null;
+    });
+
+    const radiusEl = document.getElementById('ts-radius');
+    const radiusValEl = document.getElementById('ts-radius-val');
+    radiusEl.addEventListener('input', async ()=>{
+      radiusValEl.textContent = `${radiusEl.value} m`;
+      if (lastSelection && lastSelection.mode==='point'){
+        await Promise.all([
+          fetchTimeseriesForGeom(lastSelection),
+          fetchSummaryForGeom(lastSelection)
+        ]);
+      }
+    });
+  document.getElementById('nyc-refresh').addEventListener('click', ()=>loadNYC({refresh:true}));
+  document.getElementById('nyc-hour').addEventListener('change', ()=>loadNYC({refresh:false}));
+  // Modal logic
+  const introOverlay = document.getElementById('intro-overlay');
+  const introModal = document.getElementById('intro-modal');
+  const introClose = document.getElementById('intro-close');
+  function showIntro(){ introOverlay.style.display='block'; introModal.style.display='block'; }
+  function hideIntro(){ introOverlay.style.display='none'; introModal.style.display='none'; }
+  showIntro();
+  introOverlay.addEventListener('click', hideIntro);
+  introClose.addEventListener('click', hideIntro);
+  document.addEventListener('keydown', (e)=>{ if (e.key==='Escape') hideIntro(); });
+  document.getElementById('info-btn').addEventListener('click', showIntro);
+  // Legend and initial load
+  renderLegendHotspots();
+  loadNYC({refresh:true});
+  </script>
+</body>
+</html>

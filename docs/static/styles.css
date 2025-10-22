@@ -1,0 +1,17 @@
+html, body { height: 100%; margin: 0; }
+#header { padding: 8px 12px; background: #0f172a; color: #e2e8f0; display:flex; align-items:center; gap:16px; }
+#header h1 { font-size: 18px; margin: 0 8px 0 0; }
+#header .controls { display:flex; gap:12px; align-items:center; }
+/* Map layout controlled via inline absolute positioning; keep z-index below sidebar */
+#map { z-index: 0; }
+#stats { height: 32px; padding: 6px 12px; font-size: 13px; background: #f8fafc; border-top: 1px solid #e2e8f0; }
+.divider { width: 1px; height: 22px; background: #334155; display:inline-block; margin: 0 8px; }
+.legend { position: absolute; right: 12px; top: 56px; z-index: 1000; }
+.legend-box { background: rgba(255,255,255,0.95); border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px; font-size: 12px; color: #0f172a; }
+.legend-title { font-weight: 600; margin-bottom: 6px; }
+.legend-item { display: flex; align-items: center; gap: 6px; }
+.legend-item .swatch { display:inline-block; width: 14px; height: 10px; border:1px solid #cbd5e1; }
+label { font-size: 13px; }
+button { cursor: pointer; }
+/* Ensure sidebar is above map panes */
+#sidebar { z-index: 1100; }
