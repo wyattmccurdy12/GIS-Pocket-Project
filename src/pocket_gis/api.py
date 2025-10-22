@@ -16,7 +16,8 @@ NYC_BBOX_3857 = (-8270000.0, -8205000.0, 4960000.0, 5030000.0)
 
 
 def get_con() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH)
+    # Ensure DB path and schema exist; safe to call repeatedly
+    con = init_db(DB_PATH)
     con.row_factory = sqlite3.Row
     return con
 
